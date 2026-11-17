@@ -1,6 +1,6 @@
 # tiny-chess-01 engine: alpha-beta with quiescence, MVV-LVA, killers.
 # One file, Python 3.13 standard library, fixed node budget per move.
-import os, sys, json, urllib.request
+import os, sys, json, urllib.request, random
 
 E = os.environ.get("MAKEFUN_ENV_URL") or sys.exit(1)
 C = "abcdefgh"
@@ -95,14 +95,23 @@ def _tbl(a):
 PT = {1: _tbl(PAWN), 2: _tbl(KNIGHT), 3: _tbl(BISHOP), 4: _tbl(ROOK), 5: _tbl(QUEEN)}
 KMW, KMB = _tbl(KMG)
 KEW, KEB = _tbl(KEG)
+RND = random.Random(20261117)
+ZF = {}
+for _p in (-6, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 6):
+    for _s in SQ:
+        ZF[_p, _s] = RND.getrandbits(64)
+ZSIDE = RND.getrandbits(64)
 INF = 10 ** 6
 LIM = 0
 NODES = 0
 EP = -1
 CR = ""
+H = 0
 KG = [0, 0]
 K1 = [0] * 64
 K2 = [0] * 64
+HH = [0] * 16384
+TT = {}
 
 
 class X(Exception):
@@ -172,22 +181,28 @@ def atk(b, s, st):
 
 
 def ap(b, m, st):
-    global EP, CR
+    global EP, CR, H
     f = (m >> 7 & 127)
     t = m & 127
     pc = b[f]
     cap = b[t]
     oe = EP
     oc = CR
+    h = H
     b[t] = pc
     b[f] = 0
+    H ^= ZF[pc, f] ^ ZF[pc, t] ^ ZSIDE
+    if cap:
+        H ^= ZF[cap, t]
     if abs(pc) == 1:
         if not cap and t == oe and (t & 7) != (f & 7):
             j = t - 16 * st
             cap = b[j]
             b[j] = 0
+            H ^= ZF[cap, j]
         elif t >> 4 in (0, 7):
             b[t] = (m >> 14 & 7) * (1 if pc > 0 else -1)
+            H ^= ZF[pc, t] ^ ZF[b[t], t]
         EP = f + 16 * st if t - f == 32 * st else -1
     else:
         EP = -1
@@ -197,6 +212,7 @@ def ap(b, m, st):
                 rf, rt = (f + 3, f + 1) if t > f else (f - 4, f - 1)
                 b[rt] = b[rf]
                 b[rf] = 0
+                H ^= ZF[b[rt], rf] ^ ZF[b[rt], rt]
     if CR:
         if f in (4, 7) or t in (4, 7):
             CR = CR.replace("K", "")
@@ -206,24 +222,29 @@ def ap(b, m, st):
             CR = CR.replace("k", "")
         if f in (112, 116) or t in (112, 116):
             CR = CR.replace("q", "")
-    return cap, oe, oc
+    return cap, oe, oc, h
 
 
 def un(b, m, u):
-    global EP, CR
+    global EP, CR, H
     f = (m >> 7 & 127)
     t = m & 127
     p = m >> 14 & 7
     pc = (1 if b[t] > 0 else -1) if p else b[t]
     b[f] = pc
     b[t] = u[0] if u[0] else 0
-    if abs(pc) == 1 and not u[0] and t == EP and (t & 7) != (f & 7):
+    if abs(pc) == 1 and t == u[1] and (t & 7) != (f & 7):
         b[t - 16 * (1 if pc > 0 else -1)] = -pc
         b[t] = 0
     if abs(pc) == 6:
         KG[0 if pc > 0 else 1] = f
+        if abs(t - f) == 2:
+            rf, rt = (f + 3, f + 1) if t > f else (f - 4, f - 1)
+            b[rf] = b[rt]
+            b[rt] = 0
     EP = u[1]
     CR = u[2]
+    H = u[3]
 
 
 def gen(b, st, caps=0):
@@ -350,39 +371,62 @@ def ab(b, st, d, a, bt, ply):
     NODES += 1
     if NODES > LIM:
         raise X
+    a0 = a
+    e = TT.get(H)
+    ttm = 0
+    if e:
+        ttm = e[3]
+        if e[0] >= d:
+            if e[2] == 0:
+                return e[1]
+            if e[2] == 1 and e[1] <= a:
+                return e[1]
+            if e[2] == 2 and e[1] >= bt:
+                return e[1]
     ms = gen(b, st)
+    if not ms:
+        return -INF + ply if atk(b, KG[0 if st > 0 else 1], -st) else 0
     k = K1[ply]
+    k2 = K2[ply]
     sc = []
     for m in ms:
         t = m & 127
         v = b[t]
-        if v:
-            sc.append((-(1000 + W[abs(v)] * 8 - W[abs(b[(m >> 7 & 127)])]), m))
+        if m == ttm:
+            s = 1 << 20
+        elif v:
+            s = 1000 + W[abs(v)] * 8 - W[abs(b[(m >> 7 & 127)])]
+        elif m == k:
+            s = 900
+        elif m == k2:
+            s = 880
         else:
-            sc.append((-900 if m == k else 0, m))
+            s = HH[m & 16383]
+        sc.append((-s, m))
     sc.sort()
     best = -INF
-    any = 0
+    bm = 0
     for _, m in sc:
         u = ap(b, m, st)
         if atk(b, KG[0 if st > 0 else 1], -st):
             un(b, m, u)
             continue
-        any = 1
         v = -ab(b, -st, d - 1, -bt, -a, ply + 1)
         un(b, m, u)
         if v > best:
             best = v
+            bm = m
         if v > a:
             a = v
             if a >= bt:
                 if not b[m & 127] and m != k:
                     K2[ply] = k
                     K1[ply] = m
+                HH[m & 16383] += d * d
                 break
-    if not any:
-        return -INF + ply if atk(b, KG[0 if st > 0 else 1], -st) else 0
-    return a
+    if len(TT) < 400000:
+        TT[H] = (d, best, 0 if a0 < best < bt else (1 if best <= a0 else 2), bm)
+    return best
 
 
 def uci(m):
@@ -394,16 +438,21 @@ def uci(m):
 
 
 def pick(fen, legal):
-    global LIM, NODES, EP, CR, KG
+    global LIM, NODES, EP, CR, KG, H
     b, st, ep, cr = load(fen)
     EP = ep
     CR = cr
     KG = [0, 0]
+    H = 0
     for i in SQ:
+        if b[i]:
+            H ^= ZF[b[i], i]
         if b[i] == 6:
             KG[0] = i
         elif b[i] == -6:
             KG[1] = i
+    if st < 0:
+        H ^= ZSIDE
     mv = []
     for x in legal:
         m = (C.index(x[0]) + 16 * (int(x[1]) - 1)) * 128 + C.index(x[2]) + 16 * (int(x[3]) - 1)
