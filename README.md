@@ -1,5 +1,9 @@
 # tiny-chess-01: 4 KB Python chess engine
 
+[![make.fun](https://make.fun/badge/tiny-chess-01.svg)](https://make.fun/bounty/tiny-chess-01)
+[![Rank](https://make.fun/badge/tiny-chess-01/tommy1616/tiny-chess-01/rank.svg)](https://make.fun/bounty/tiny-chess-01)
+[![Reward](https://make.fun/badge/tiny-chess-01/tommy1616/tiny-chess-01/reward.svg)](https://make.fun/bounty/tiny-chess-01)
+
 An entry for make.fun's tiny-chess-01 bounty: a chess engine in `main.py`, at
 most 4,096 bytes, Python 3.13 standard library only. `main.py` is the engine
 (the kit's `compress` packed it; `chess_engine.py` is the readable source it
